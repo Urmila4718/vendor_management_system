@@ -1,3 +1,4 @@
+from math import ceil
 from rest_framework import generics,permissions # type: ignore
 from .models import Vendor, PurchaseOrder
 from .serializers import *
@@ -6,6 +7,8 @@ from django.utils import timezone
 from django.http import JsonResponse
 from .models import Vendor, PurchaseOrder
 from django.views.decorators.csrf import csrf_exempt
+from datetime import timedelta
+
 
 class VendorListCreate(generics.ListCreateAPIView):
     queryset = Vendor.objects.all()
@@ -29,24 +32,37 @@ class PurchaseOrderRetrieveUpdateDestroy(generics.RetrieveUpdateDestroyAPIView):
 
 def calculate_performance_metrics(vendor):
     # On-Time Delivery Rate
-    completed_pos = vendor.purchase_orders.filter(status='Completed')
+    completed_pos = vendor.purchase_orders.filter(status='completed')
     on_time_deliveries = completed_pos.filter(order_date__lt=F('delivery_date')).count()
     total_completed_pos = completed_pos.count()
-    on_time_delivery_rate = (on_time_deliveries / total_completed_pos) * 100 if total_completed_pos else 0
+    on_time_delivery_rate = (on_time_deliveries / total_completed_pos) * 100 if on_time_deliveries and total_completed_pos else 0
 
     # Quality Rating Average
     quality_rating_avg = completed_pos.aggregate(avg_rating=Avg('quality_rating'))['avg_rating'] or 0
 
     # Average Response Time
-    response_times = completed_pos.annotate(response_time=F('issue_date') - F('acknowledgment_date'))
+    response_times = completed_pos.annotate(response_time= F('acknowledgment_date')- F('issue_date'))
     
-    average_response_time = response_times.aggregate(avg_response=Avg('response_time'))['avg_response']
+    # average_response_time = response_times.aggregate(avg_response=Avg('response_time'))['avg_response']
+    average_response_time_timedelta = response_times.aggregate(avg_response=Avg('response_time'))['avg_response']
+    
+    # Convert timedelta to hours
+    average_response_time = average_response_time_timedelta.total_seconds()/ 3600
+    
     
     # Fulfilment Rate
-    successful_pos = completed_pos.filter(status='Completed')
+    successful_pos = completed_pos.filter(status='completed')
     issued_pos = vendor.purchase_orders.count()
     fulfillment_rate = round((successful_pos.count() / issued_pos),2) 
+    
+     # Update Vendor instance with new metrics
+    vendor.on_time_delivery_rate = on_time_delivery_rate
+    vendor.quality_rating_avg = quality_rating_avg
+    vendor.average_response_time = average_response_time
+    vendor.fulfillment_rate = fulfillment_rate
 
+    # Save the updated Vendor instance
+    vendor.save()
     return {
         'on_time_delivery_rate': on_time_delivery_rate,
         'quality_rating_avg': quality_rating_avg,
@@ -65,7 +81,7 @@ def vendor_performance(request, vendor_id):
 @csrf_exempt
 def acknowledge_purchase_order(request, po_id):
     try:
-        po = PurchaseOrder.objects.get(pk=po_id)
+        po = PurchaseOrder.objects.get(po_number=po_id)
         po.acknowledgment_date = timezone.now()
         po.save()
         vendor = po.vendor
@@ -73,3 +89,10 @@ def acknowledge_purchase_order(request, po_id):
         return JsonResponse(performance_metrics, status=200)
     except PurchaseOrder.DoesNotExist:
         return JsonResponse({'error': 'Purchase Order not found'}, status=404)
+    
+@receiver(post_save, sender=PurchaseOrder)
+def update_vendor_performance_metrics(sender, instance, **kwargs):
+    if instance.status == 'completed':
+        vendor = instance.vendor
+        # Recalculate and update performance metrics
+        calculate_performance_metrics(vendor)
