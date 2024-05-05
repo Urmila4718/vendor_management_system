@@ -28,7 +28,7 @@ class PurchaseOrder(models.Model):
     acknowledgment_date = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
-        return f"PO {self.po_number} for {self.vendor.name}"
+        return self.po_number
 
 class VendorPerformance(models.Model):
     vendor = models.ForeignKey(Vendor, on_delete=models.CASCADE, related_name='historical_performance')
